@@ -1,5 +1,7 @@
 # agent-lab
 
+[![CI](https://github.com/westsonGoogle/agent-lab/actions/workflows/ci.yml/badge.svg)](https://github.com/westsonGoogle/agent-lab/actions/workflows/ci.yml)
+
 > 第 0 阶段作业：不用任何 Agent 框架，手写一个能跑的 Agent。
 > 核心结论先放这里：**Agent = 带工具和消息状态的 while 循环。**
 
@@ -180,4 +182,6 @@ docs/NOTES.md         # 五个概念的笔记
 
 ---
 
-MIT License
+## License
+
+[MIT](LICENSE) © 2026 westson
