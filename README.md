@@ -8,7 +8,7 @@
 一个命令行 Agent，能：
 
 - 查天气（Open-Meteo，免费无需 Key）
-- 读本地文件（沙箱限制在 `ALLOWED_ROOT` 内）
+- 读本地文件、按关键词搜索（沙箱限制在 `ALLOWED_ROOT` 内）
 - 算数学（AST 白名单求值，不用 `eval`）
 
 同时带一个 FastAPI + SSE 的 HTTP 接口，和一套不联网的 pytest。
@@ -84,7 +84,7 @@ src/agentlab/
 ├── tools/
 │   ├── base.py       #   Tool = 名字 + 描述 + JSON Schema + 函数
 │   ├── calc.py       #   AST 安全求值
-│   ├── files.py      #   沙箱读文件
+│   ├── files.py      #   沙箱读文件 + 关键词搜索
 │   └── weather.py    #   Open-Meteo
 ├── cli.py            # 流式 REPL
 └── server.py         # FastAPI + SSE
