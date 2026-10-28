@@ -146,6 +146,9 @@ def sandbox(tmp_path: Path) -> tuple[Path, ToolRegistry]:
     (root / "hello.txt").write_text("line1\nline2\nline3\n", encoding="utf-8")
     (root / "sub").mkdir()
     (root / "sub" / "nested.txt").write_text("nested", encoding="utf-8")
+    (root / "sub" / "more.txt").write_text("AGENT 在子目录\n", encoding="utf-8")
+    (root / "notes.md").write_text("Agent 是循环\nPython 很好\nagent loop\n", encoding="utf-8")
+    (root / "binary.bin").write_bytes(b"\xff\xfe\x00\x00")
     (root / ".env").write_text("SECRET=1", encoding="utf-8")
     (tmp_path / "outside.txt").write_text("secret", encoding="utf-8")
     return root, ToolRegistry(build_file_tools(root))
@@ -187,6 +190,59 @@ def test_list_dir(sandbox: tuple[Path, ToolRegistry]) -> None:
     names = {entry["name"] for entry in data["entries"]}
     assert {"hello.txt", "sub"} <= names
     assert ".env" not in names  # 敏感文件不列出来
+
+
+# ---------------------------------------------------------------------------
+# 关键词搜索
+# ---------------------------------------------------------------------------
+
+
+def test_search_notes_finds_matches_in_subdirs(sandbox: tuple[Path, ToolRegistry]) -> None:
+    _, registry = sandbox
+    data = json.loads(registry.execute("search_notes", '{"keyword": "agent"}'))
+    found = {(match["file"], match["line"]) for match in data["matches"]}
+    assert {("notes.md", 1), ("notes.md", 3), ("sub/more.txt", 1)} == found
+    assert data["truncated"] is False
+    assert data["scanned_files"] >= 2
+
+
+def test_search_notes_case_sensitive(sandbox: tuple[Path, ToolRegistry]) -> None:
+    _, registry = sandbox
+    data = json.loads(
+        registry.execute("search_notes", '{"keyword": "Agent", "case_sensitive": true}')
+    )
+    assert [(match["file"], match["line"]) for match in data["matches"]] == [("notes.md", 1)]
+
+
+def test_search_notes_respects_max_results(sandbox: tuple[Path, ToolRegistry]) -> None:
+    _, registry = sandbox
+    data = json.loads(registry.execute("search_notes", '{"keyword": "agent", "max_results": 1}'))
+    assert len(data["matches"]) == 1
+    assert data["truncated"] is True
+
+
+def test_search_notes_scoped_to_subdir(sandbox: tuple[Path, ToolRegistry]) -> None:
+    _, registry = sandbox
+    data = json.loads(registry.execute("search_notes", '{"keyword": "agent", "path": "sub"}'))
+    assert data["path"] == "sub"
+    assert [match["file"] for match in data["matches"]] == ["sub/more.txt"]
+
+
+def test_search_notes_skips_secrets_and_binary(sandbox: tuple[Path, ToolRegistry]) -> None:
+    _, registry = sandbox
+    assert json.loads(registry.execute("search_notes", '{"keyword": "SECRET"}'))["matches"] == []
+
+
+def test_search_notes_blocks_escape(sandbox: tuple[Path, ToolRegistry]) -> None:
+    _, registry = sandbox
+    result = registry.execute("search_notes", '{"keyword": "x", "path": "../"}')
+    assert "PermissionError" in result
+
+
+def test_search_notes_rejects_empty_keyword(sandbox: tuple[Path, ToolRegistry]) -> None:
+    _, registry = sandbox
+    result = registry.execute("search_notes", '{"keyword": "  "}')
+    assert "ValueError" in result
 
 
 # ---------------------------------------------------------------------------

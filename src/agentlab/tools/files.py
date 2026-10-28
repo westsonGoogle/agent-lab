@@ -9,12 +9,29 @@
 from __future__ import annotations
 
 import json
+import os
+from collections.abc import Iterator
 from pathlib import Path
 
 from .base import Tool
 
 MAX_READ_BYTES = 200_000
 MAX_READ_LINES = 2_000
+MAX_SEARCH_RESULTS = 50
+MAX_SEARCH_FILE_BYTES = 1_000_000
+# 搜索时直接跳过的目录:既省时间,也避免把依赖和缓存里的噪音带进上下文
+SEARCH_SKIP_DIRS = {
+    ".git",
+    ".venv",
+    "venv",
+    "__pycache__",
+    "node_modules",
+    ".ruff_cache",
+    ".pytest_cache",
+    ".mypy_cache",
+    "dist",
+    "build",
+}
 BLOCKED_NAMES = {".env", ".git", ".ssh", "id_rsa", "id_ed25519"}
 BLOCKED_SUFFIXES = {".pem", ".key", ".p12"}
 
@@ -43,6 +60,32 @@ def _display(root: Path, path: Path) -> str:
         return str(path.relative_to(root))
     except ValueError:
         return str(path)
+
+
+def _iter_searchable_files(root: Path, start: Path) -> Iterator[tuple[Path, str]]:
+    """遍历 start 下的文本文件,跳过敏感文件、依赖目录、二进制和超大文件。"""
+    for dirpath, dirnames, filenames in os.walk(start, followlinks=False):
+        dirnames[:] = sorted(
+            name
+            for name in dirnames
+            if name not in SEARCH_SKIP_DIRS and not name.startswith(".env")
+        )
+        for filename in sorted(filenames):
+            if filename in BLOCKED_NAMES or filename.startswith(".env"):
+                continue
+            path = Path(dirpath) / filename
+            if path.suffix.lower() in BLOCKED_SUFFIXES:
+                continue
+            try:
+                resolved = path.resolve()
+                # 软链接可能指向沙箱外,必须逐个校验
+                if not resolved.is_relative_to(root):
+                    continue
+                if resolved.stat().st_size > MAX_SEARCH_FILE_BYTES:
+                    continue
+                yield resolved, resolved.read_text(encoding="utf-8")
+            except (OSError, UnicodeDecodeError):
+                continue
 
 
 def build_file_tools(root: Path) -> list[Tool]:
@@ -102,6 +145,58 @@ def build_file_tools(root: Path) -> list[Tool]:
             )
         return json.dumps({"path": _display(root, target), "entries": entries}, ensure_ascii=False)
 
+    def search_notes(
+        keyword: str,
+        path: str = ".",
+        max_results: int = 20,
+        case_sensitive: bool = False,
+    ) -> str:
+        if not isinstance(keyword, str) or not keyword.strip():
+            raise ValueError("keyword 不能为空")
+        if len(keyword) > 100:
+            raise ValueError("keyword 太长(上限 100 字符)")
+
+        start = _resolve(root, path)
+        if not start.exists():
+            raise FileNotFoundError(f"路径不存在: {path}")
+        if not start.is_dir():
+            raise NotADirectoryError(f"{path} 不是目录")
+
+        needle = keyword if case_sensitive else keyword.lower()
+        limit = max(1, min(int(max_results), MAX_SEARCH_RESULTS))
+        matches: list[dict[str, object]] = []
+        scanned = 0
+        truncated = False
+
+        for file, text in _iter_searchable_files(root, start):
+            scanned += 1
+            for number, line in enumerate(text.splitlines(), start=1):
+                haystack = line if case_sensitive else line.lower()
+                if needle in haystack:
+                    matches.append(
+                        {
+                            "file": _display(root, file),
+                            "line": number,
+                            "text": line.strip()[:200],
+                        }
+                    )
+                    if len(matches) >= limit:
+                        truncated = True
+                        break
+            if truncated:
+                break
+
+        return json.dumps(
+            {
+                "keyword": keyword,
+                "path": _display(root, start),
+                "matches": matches,
+                "scanned_files": scanned,
+                "truncated": truncated,
+            },
+            ensure_ascii=False,
+        )
+
     return [
         Tool(
             name="read_file",
@@ -146,5 +241,38 @@ def build_file_tools(root: Path) -> list[Tool]:
             },
             func=list_dir,
             example={"path": "."},
+        ),
+        Tool(
+            name="search_notes",
+            description=(
+                "在沙箱目录内按关键词搜索文本文件(纯文本匹配,默认忽略大小写),"
+                "返回文件路径、行号和匹配行。适合在笔记或代码库里找线索。"
+            ),
+            parameters={
+                "type": "object",
+                "properties": {
+                    "keyword": {
+                        "type": "string",
+                        "description": "要搜索的关键词,不支持正则表达式",
+                    },
+                    "path": {
+                        "type": "string",
+                        "description": "搜索起始目录,默认沙箱根目录",
+                    },
+                    "max_results": {
+                        "type": "integer",
+                        "description": "最多返回多少条匹配,默认 20",
+                        "minimum": 1,
+                        "maximum": MAX_SEARCH_RESULTS,
+                    },
+                    "case_sensitive": {
+                        "type": "boolean",
+                        "description": "是否区分大小写,默认 false",
+                    },
+                },
+                "required": ["keyword"],
+            },
+            func=search_notes,
+            example={"keyword": "tool_calls", "max_results": 5},
         ),
     ]
